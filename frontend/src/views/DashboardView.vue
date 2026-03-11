@@ -1,11 +1,79 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import api from '../utils/api.js'
+import { Pie } from 'vue-chartjs'
+import {
+  Chart as ChartJS,
+  ArcElement,
+  Tooltip,
+  Legend
+} from 'chart.js'
+
+ChartJS.register(ArcElement, Tooltip, Legend)
 
 const totalDevices = ref(0)
 const onlineDevices = ref(0)
 const offlineDevices = ref(0)
 const devices = ref([])
+
+const topCpuDevices = computed(() => {
+  return devices.value
+    .filter(d => d.status === 'online')
+    .map(d => ({
+      ...d,
+      cpu_usage: Math.floor(Math.random() * 100) // Mock CPU usage
+    }))
+    .sort((a, b) => b.cpu_usage - a.cpu_usage)
+    .slice(0, 10)
+})
+
+const chartData = computed(() => ({
+  labels: ['Online', 'Offline'],
+  datasets: [
+    {
+      label: 'Device Status',
+      data: [onlineDevices.value, offlineDevices.value],
+      backgroundColor: ['#22c55e', '#ef4444'],
+      borderColor: ['#16a34a', '#dc2626'],
+      borderWidth: 2,
+      hoverOffset: 8
+    }
+  ]
+}))
+
+const chartOptions = {
+  responsive: true,
+  maintainAspectRatio: true,
+  plugins: {
+    legend: {
+      position: 'bottom',
+      labels: {
+        usePointStyle: true,
+        padding: 20,
+        font: {
+          size: 14,
+          weight: 500
+        },
+        color: '#334155'
+      }
+    },
+    tooltip: {
+      backgroundColor: 'rgba(15, 23, 42, 0.8)',
+      titleFont: { size: 13 },
+      bodyFont: { size: 12 },
+      padding: 12,
+      displayColors: true,
+      callbacks: {
+        label: function(context) {
+          const total = context.dataset.data.reduce((a, b) => a + b, 0)
+          if (total === 0) return `${context.label}: 0`
+          const percentage = ((context.parsed / total) * 100).toFixed(1)
+          return `${context.label}: ${context.parsed} (${percentage}%)`
+        }
+      }
+    }
+  }
+}
 
 onMounted(async () => {
   try {
@@ -64,56 +132,86 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- Pie Chart Section -->
+    <!-- Pie Chart & Status Summary & Top 10 CPU Section -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-      <div class="lg:col-span-1 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+      <!-- Pie Chart -->
+      <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col">
         <h3 class="text-lg font-semibold text-slate-800 mb-6">Device Status Distribution</h3>
-        <div v-if="totalDevices > 0" class="space-y-3">
-          <div class="flex items-center justify-between">
-            <span class="text-sm font-medium text-slate-700">Online</span>
-            <span class="text-lg font-bold text-green-600">{{ onlineDevices }} ({{ ((onlineDevices / totalDevices) * 100).toFixed(0) }}%)</span>
-          </div>
-          <div class="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
-            <div class="bg-green-500 h-full" :style="{ width: `${(onlineDevices / totalDevices) * 100}%` }"></div>
-          </div>
-          
-          <div class="flex items-center justify-between mt-4">
-            <span class="text-sm font-medium text-slate-700">Offline</span>
-            <span class="text-lg font-bold text-red-600">{{ offlineDevices }} ({{ ((offlineDevices / totalDevices) * 100).toFixed(0) }}%)</span>
-          </div>
-          <div class="w-full bg-slate-200 rounded-full h-3 overflow-hidden">
-            <div class="bg-red-500 h-full" :style="{ width: `${(offlineDevices / totalDevices) * 100}%` }"></div>
-          </div>
+        <div v-if="totalDevices > 0" class="flex justify-center items-center" style="height: 280px;">
+          <Pie :data="chartData" :options="chartOptions" />
         </div>
-        <div v-else class="p-6 text-center text-slate-500">
+        <div v-else class="p-6 text-center text-slate-500 flex items-center justify-center h-full">
           <p class="text-sm">No devices yet</p>
         </div>
       </div>
 
-      <div class="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-        <h3 class="text-lg font-semibold text-slate-800 mb-6">Status Summary</h3>
-        <div class="space-y-4">
-          <div class="flex items-center justify-between p-4 bg-green-50 rounded-lg border border-green-100">
-            <div class="flex items-center gap-3">
-              <div class="w-4 h-4 rounded-full bg-green-500"></div>
-              <span class="font-medium text-slate-700">Online Devices</span>
+      <!-- Status Summary -->
+      <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+        <h3 class="text-lg font-semibold text-slate-800 mb-4">Status Summary</h3>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="flex items-center justify-between p-3 bg-green-50 rounded-lg border border-green-100">
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-green-500"></div>
+              <span class="font-medium text-slate-700 text-sm">Online</span>
             </div>
-            <span class="text-2xl font-bold text-green-600">{{ onlineDevices }}</span>
+            <span class="text-xl font-bold text-green-600">{{ onlineDevices }}</span>
           </div>
-          <div class="flex items-center justify-between p-4 bg-red-50 rounded-lg border border-red-100">
-            <div class="flex items-center gap-3">
-              <div class="w-4 h-4 rounded-full bg-red-500"></div>
-              <span class="font-medium text-slate-700">Offline Devices</span>
+          <div class="flex items-center justify-between p-3 bg-red-50 rounded-lg border border-red-100">
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-red-500"></div>
+              <span class="font-medium text-slate-700 text-sm">Offline</span>
             </div>
-            <span class="text-2xl font-bold text-red-600">{{ offlineDevices }}</span>
+            <span class="text-xl font-bold text-red-600">{{ offlineDevices }}</span>
           </div>
-          <div class="flex items-center justify-between p-4 bg-blue-50 rounded-lg border border-blue-100 mt-6">
-            <span class="font-medium text-slate-700">Total Devices</span>
-            <span class="text-2xl font-bold text-blue-600">{{ totalDevices }}</span>
+          <div class="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-100">
+            <span class="font-medium text-slate-700 text-sm">Total</span>
+            <span class="text-xl font-bold text-blue-600">{{ totalDevices }}</span>
           </div>
-          <div v-if="totalDevices > 0" class="flex items-center justify-between p-4 bg-slate-50 rounded-lg border border-slate-200 mt-6">
-            <span class="font-medium text-slate-700">Uptime Rate</span>
-            <span class="text-2xl font-bold text-slate-600">{{ ((onlineDevices / totalDevices) * 100).toFixed(1) }}%</span>
+          <div v-if="totalDevices > 0" class="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-200">
+            <span class="font-medium text-slate-700 text-sm">Uptime</span>
+            <span class="text-xl font-bold text-slate-600">{{ ((onlineDevices / totalDevices) * 100).toFixed(0) }}%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top 10 CPU Usage -->
+      <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col">
+        <div class="flex justify-between items-center mb-4">
+          <h3 class="text-lg font-semibold text-slate-800">🔥 Top CPU</h3>
+          <button class="text-blue-600 hover:text-blue-800 text-xs font-medium">See More →</button>
+        </div>
+        <div v-if="topCpuDevices.length === 0" class="p-6 text-center text-slate-400 flex items-center justify-center flex-1">
+          <p class="text-sm">No online devices</p>
+        </div>
+        <div v-else class="space-y-2 flex-1 overflow-y-auto max-h-96">
+          <div v-for="(device, index) in topCpuDevices" :key="device.id" class="p-2 rounded-lg border border-slate-100 hover:bg-slate-50 transition">
+            <div class="flex items-center justify-between mb-1">
+              <div class="flex items-center gap-2">
+                <span class="font-bold w-6 text-center" :class="{
+                  'text-red-600': index === 0,
+                  'text-orange-600': index === 1,
+                  'text-yellow-600': index === 2,
+                  'text-slate-500': index >= 3
+                }">#{{ index + 1 }}</span>
+                <span class="font-medium text-slate-800 text-sm truncate">{{ device.hostname }}</span>
+              </div>
+              <span class="font-bold text-sm" :class="{
+                'text-red-600': device.cpu_usage > 80,
+                'text-orange-600': device.cpu_usage > 50 && device.cpu_usage <= 80,
+                'text-green-600': device.cpu_usage <= 50
+              }">{{ device.cpu_usage }}%</span>
+            </div>
+            <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+              <div 
+                class="h-full" 
+                :style="{ width: `${device.cpu_usage}%` }"
+                :class="{
+                  'bg-red-500': device.cpu_usage > 80,
+                  'bg-orange-500': device.cpu_usage > 50 && device.cpu_usage <= 80,
+                  'bg-green-500': device.cpu_usage <= 50
+                }">
+              </div>
+            </div>
           </div>
         </div>
       </div>

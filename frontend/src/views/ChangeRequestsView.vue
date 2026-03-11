@@ -13,6 +13,8 @@ const searchQuery = ref('')
 // 'list', 'create', or 'view'
 const viewMode = ref('list')
 const selectedCR = ref(null)
+const approvalComment = ref('')
+const isApprovingReject = ref(false)
 
 const currentUser = ref(JSON.parse(localStorage.getItem('user')) || null)
 
@@ -192,13 +194,26 @@ const saveCR = async () => {
 }
 
 const updateStatus = async (id, status) => {
-  if (!confirm(`Are you sure you want to mark this request as ${status}?`)) return;
+  isApprovingReject.value = true
   try {
-    await api.put(`/change-requests/${id}/status`, { status })
+    const payload = {
+      status,
+      approval_comments: approvalComment.value || null
+    }
+    const response = await api.put(`/change-requests/${id}/status`, payload)
+    approvalComment.value = ''
+    
+    // Refresh the list
     await fetchChangeRequests()
+    
+    // Close the view and return to list
+    viewMode.value = 'list'
+    selectedCR.value = null
   } catch (error) {
     console.error('Failed to update status:', error)
     alert(error.response?.data?.message || 'Error updating status.')
+  } finally {
+    isApprovingReject.value = false
   }
 }
 
@@ -565,6 +580,14 @@ onMounted(async () => {
               </div>
             </div>
 
+            <div v-if="selectedCR.approval_comments && selectedCR.status !== 'pending'">
+              <h4 class="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">Manager Comments</h4>
+              <div class="bg-blue-50 p-4 rounded-lg border border-blue-100 shadow-sm">
+                <p class="text-slate-700 whitespace-pre-wrap text-sm leading-relaxed">{{ selectedCR.approval_comments }}</p>
+                <p class="text-xs text-slate-500 mt-3" v-if="selectedCR.approver">Reviewed by: <span class="font-medium text-slate-700">{{ selectedCR.approver.name }}</span> on {{ formatDate(selectedCR.updated_at) }}</p>
+              </div>
+            </div>
+
             <div v-if="selectedCR.attachment_path">
               <h4 class="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">Attachment</h4>
               <button @click="downloadAttachment(selectedCR.id, selectedCR.attachment_name)" class="w-full text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 focus:ring-4 focus:ring-blue-100 font-medium rounded-lg text-sm px-5 py-3 text-center inline-flex items-center justify-center gap-2 transition shadow-sm">
@@ -574,10 +597,35 @@ onMounted(async () => {
             </div>
             
             <div v-if="selectedCR.status === 'pending' && ['admin', 'manager'].includes(currentUser?.role)" class="pt-4 border-t border-slate-100">
-                <h4 class="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">Admin Actions</h4>
-                <div class="flex gap-3">
-                    <button @click="updateStatus(selectedCR.id, 'approved'); selectedCR.status = 'approved'" class="flex-1 text-white bg-green-500 hover:bg-green-600 px-3 py-2.5 rounded-lg shadow-sm transition font-medium text-sm">Approve</button>
-                    <button @click="updateStatus(selectedCR.id, 'rejected'); selectedCR.status = 'rejected'" class="flex-1 text-white bg-red-500 hover:bg-red-600 px-3 py-2.5 rounded-lg shadow-sm transition font-medium text-sm">Reject</button>
+                <h4 class="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">Manager Review & Approval</h4>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-2">Comments (Optional)</label>
+                        <textarea v-model="approvalComment" rows="3" placeholder="Add any comments or feedback before approving or rejecting..." class="w-full border border-slate-300 rounded-lg px-3 py-2 text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm resize-none" :disabled="isApprovingReject"></textarea>
+                        <p class="text-xs text-slate-400 mt-1">Max 1000 characters</p>
+                    </div>
+                    <div class="flex gap-3">
+                        <button 
+                            @click="updateStatus(selectedCR.id, 'approved')" 
+                            :disabled="isApprovingReject"
+                            class="flex-1 text-white bg-green-500 hover:bg-green-600 disabled:bg-green-400 disabled:cursor-not-allowed px-3 py-2.5 rounded-lg shadow-sm transition font-medium text-sm flex items-center justify-center gap-2">
+                            <svg v-if="isApprovingReject" class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            {{ isApprovingReject ? 'Processing...' : 'Approve' }}
+                        </button>
+                        <button 
+                            @click="updateStatus(selectedCR.id, 'rejected')" 
+                            :disabled="isApprovingReject"
+                            class="flex-1 text-white bg-red-500 hover:bg-red-600 disabled:bg-red-400 disabled:cursor-not-allowed px-3 py-2.5 rounded-lg shadow-sm transition font-medium text-sm flex items-center justify-center gap-2">
+                            <svg v-if="isApprovingReject" class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            {{ isApprovingReject ? 'Processing...' : 'Reject' }}
+                        </button>
+                    </div>
                 </div>
             </div>
 
