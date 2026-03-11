@@ -12,6 +12,26 @@ class Device extends Model
         'os_version',
         'location',
         'eol_date',
-        'model'
+        'model',
+        'username',
+        'password',
+        'device_type'
     ];
+
+    /**
+     * The attributes that should be hidden for serialization.
+     *
+     * @var list<string>
+     */
+    protected $hidden = [
+        'password',
+    ];
+
+    /**
+     * Get the change requests associated with the device.
+     */
+    public function changeRequests()
+    {
+        return $this->belongsToMany(ChangeRequest::class);
+    }
 }
