@@ -18,7 +18,8 @@ class ChangeRequest extends Model
         'end_time',
         'status',
         'attachment_path',
-        'attachment_name'
+        'attachment_name',
+        'approval_comments'
     ];
 
     protected $casts = [

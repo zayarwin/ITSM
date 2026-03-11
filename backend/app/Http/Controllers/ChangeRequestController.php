@@ -91,9 +91,11 @@ class ChangeRequestController extends Controller
 
         $validated = $request->validate([
             'status' => 'required|in:approved,rejected',
+            'approval_comments' => 'nullable|string|max:1000',
         ]);
 
         $changeRequest->status = $validated['status'];
+        $changeRequest->approval_comments = $validated['approval_comments'] ?? null;
         $changeRequest->approver_id = $request->user()->id;
         $changeRequest->save();
 
