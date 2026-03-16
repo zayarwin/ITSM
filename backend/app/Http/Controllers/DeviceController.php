@@ -91,14 +91,17 @@ class DeviceController extends Controller
         
         $validated = $request->validate([
             'command' => 'required|string',
+            'username' => 'required|string',
+            'password' => 'required|string',
         ]);
 
         try {
-            $response = \Illuminate\Support\Facades\Http::post('http://127.0.0.1:8001/run-command', [
+            $middlewareUrl = rtrim(env('MIDDLEWARE_URL', 'http://127.0.0.1:8001'), '/');
+            $response = \Illuminate\Support\Facades\Http::post("{$middlewareUrl}/run-command", [
                 'device_type' => $device->device_type,
                 'host'        => $device->ip_address,
-                'username'    => $device->username,
-                'password'    => $device->password,
+                'username'    => $validated['username'],
+                'password'    => $validated['password'],
                 'command'     => $validated['command'],
             ]);
 
@@ -115,21 +118,131 @@ class DeviceController extends Controller
         }
     }
 
+    public function connectTelnet(Request $request, string $id)
+    {
+        $device = \App\Models\Device::findOrFail($id);
+
+        $validated = $request->validate([
+            'port' => 'nullable|integer|min:1|max:65535',
+        ]);
+
+        try {
+            $middlewareUrl = rtrim(env('MIDDLEWARE_URL', 'http://127.0.0.1:8001'), '/');
+            $response = \Illuminate\Support\Facades\Http::post("{$middlewareUrl}/telnet/connect", [
+                'host' => $device->ip_address,
+                'port' => $validated['port'] ?? 23,
+            ]);
+
+            if ($response->successful()) {
+                return $response->json();
+            }
+
+            return response()->json([
+                'error' => 'Middleware error',
+                'details' => $response->json(),
+            ], $response->status());
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Failed to connect to middleware', 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    public function writeTelnet(Request $request, string $id)
+    {
+        \App\Models\Device::findOrFail($id);
+
+        $validated = $request->validate([
+            'session_id' => 'required|string',
+            'data' => 'required|string',
+        ]);
+
+        try {
+            $middlewareUrl = rtrim(env('MIDDLEWARE_URL', 'http://127.0.0.1:8001'), '/');
+            $response = \Illuminate\Support\Facades\Http::post("{$middlewareUrl}/telnet/write", $validated);
+
+            if ($response->successful()) {
+                return $response->json();
+            }
+
+            return response()->json([
+                'error' => 'Middleware error',
+                'details' => $response->json(),
+            ], $response->status());
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Failed to connect to middleware', 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    public function readTelnet(Request $request, string $id)
+    {
+        \App\Models\Device::findOrFail($id);
+
+        $validated = $request->validate([
+            'session_id' => 'required|string',
+        ]);
+
+        try {
+            $middlewareUrl = rtrim(env('MIDDLEWARE_URL', 'http://127.0.0.1:8001'), '/');
+            $response = \Illuminate\Support\Facades\Http::post("{$middlewareUrl}/telnet/read", $validated);
+
+            if ($response->successful()) {
+                return $response->json();
+            }
+
+            return response()->json([
+                'error' => 'Middleware error',
+                'details' => $response->json(),
+            ], $response->status());
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Failed to connect to middleware', 'message' => $e->getMessage()], 500);
+        }
+    }
+
+    public function closeTelnet(Request $request, string $id)
+    {
+        \App\Models\Device::findOrFail($id);
+
+        $validated = $request->validate([
+            'session_id' => 'required|string',
+        ]);
+
+        try {
+            $middlewareUrl = rtrim(env('MIDDLEWARE_URL', 'http://127.0.0.1:8001'), '/');
+            $response = \Illuminate\Support\Facades\Http::post("{$middlewareUrl}/telnet/close", $validated);
+
+            if ($response->successful()) {
+                return $response->json();
+            }
+
+            return response()->json([
+                'error' => 'Middleware error',
+                'details' => $response->json(),
+            ], $response->status());
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Failed to connect to middleware', 'message' => $e->getMessage()], 500);
+        }
+    }
+
     /**
      * Ping the device to check online status.
+     * Delegated to the Python middleware which has NET_RAW capability for ICMP.
      */
     public function ping(string $id)
     {
         $device = \App\Models\Device::findOrFail($id);
-        $ip = escapeshellarg($device->ip_address);
-        
-        // ping -n 1 sends 1 request, -w 1000 waits 1 second for response (Windows)
-        exec("ping -n 1 -w 1000 {$ip}", $output, $status);
-        
-        if ($status === 0) {
-            return response()->json(['status' => 'online']);
-        } else {
-            return response()->json(['status' => 'offline']);
+        $middlewareUrl = rtrim(env('MIDDLEWARE_URL', 'http://127.0.0.1:8001'), '/');
+
+        try {
+            $response = \Illuminate\Support\Facades\Http::timeout(5)
+                ->post("{$middlewareUrl}/ping", ['host' => $device->ip_address]);
+
+            if ($response->successful()) {
+                $online = $response->json('online', false);
+                return response()->json(['status' => $online ? 'online' : 'offline']);
+            }
+        } catch (\Exception $e) {
+            // middleware unreachable — fall through to offline
         }
+
+        return response()->json(['status' => 'offline']);
     }
 }

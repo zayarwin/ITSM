@@ -1,0 +1,92 @@
+services:
+
+  # ── MySQL database ─────────────────────────────────────────────────────────
+  db:
+    image: mysql:8.4
+    container_name: itsm_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_secret
+      MYSQL_DATABASE: itsm
+      MYSQL_USER: itsm
+      MYSQL_PASSWORD: itsm_secret
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - itsm_net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "itsm", "-pitsm_secret"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Laravel backend ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: itsm_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      middleware:
+        condition: service_started
+    environment:
+      - MIDDLEWARE_URL=http://middleware:8001
+    networks:
+      - itsm_net
+
+  # ── Python / FastAPI middleware ────────────────────────────────────────────
+  middleware:
+    build:
+      context: ./middleware
+      dockerfile: Dockerfile
+    container_name: itsm_middleware
+    restart: unless-stopped
+    # NET_RAW + NET_ADMIN allow raw ICMP sockets so ping3 works inside Docker
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    networks:
+      - itsm_net
+
+  # ── Vue.js frontend (built & served by nginx) ─────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      # No VITE_API_BASE_URL needed — frontend uses relative /api path,
+      # so the same image works locally, on EC2, or any domain.
+    container_name: itsm_frontend
+    restart: unless-stopped
+    networks:
+      - itsm_net
+
+  # ── Nginx reverse proxy (single public entry point) ───────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: itsm_nginx
+    restart: unless-stopped
+    ports:
+      - "8080:8080"          # Change the left-hand port to avoid conflicts
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - middleware
+      - frontend
+    networks:
+      - itsm_net
+
+volumes:
+  db_data:
+    name: itsm_db_data     # Named volume so data survives container rebuilds
+
+networks:
+  itsm_net:
+    name: itsm_network     # Isolated network — won't clash with other projects
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.250.0.0/24

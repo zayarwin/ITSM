@@ -15,6 +15,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('devices', \App\Http\Controllers\DeviceController::class);
     Route::post('/devices/{id}/run-command', [\App\Http\Controllers\DeviceController::class, 'runCommand']);
     Route::get('/devices/{id}/ping', [\App\Http\Controllers\DeviceController::class, 'ping']);
+    Route::post('/devices/{id}/telnet/connect', [\App\Http\Controllers\DeviceController::class, 'connectTelnet']);
+    Route::post('/devices/{id}/telnet/write', [\App\Http\Controllers\DeviceController::class, 'writeTelnet']);
+    Route::post('/devices/{id}/telnet/read', [\App\Http\Controllers\DeviceController::class, 'readTelnet']);
+    Route::post('/devices/{id}/telnet/close', [\App\Http\Controllers\DeviceController::class, 'closeTelnet']);
 
     // Admin-only User management endpoints
     Route::apiResource('users', \App\Http\Controllers\UserController::class);

@@ -1,11 +1,46 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import paramiko
-from netmiko import ConnectHandler
-import ping3
 import datetime
+import socket
+import threading
+import time
+import uuid
+
+import paramiko
+import ping3
+from fastapi import FastAPI, HTTPException
+from netmiko import ConnectHandler
+from pydantic import BaseModel
 
 app = FastAPI(title="NetAuto Middleware")
+
+TELNET_IAC = 255
+TELNET_DONT = 254
+TELNET_DO = 253
+TELNET_WONT = 252
+TELNET_WILL = 251
+TELNET_SB = 250
+TELNET_SE = 240
+TELNET_OPT_BINARY = 0
+TELNET_OPT_ECHO = 1
+TELNET_OPT_SGA = 3
+
+
+class TelnetSession:
+    def __init__(self, host: str, port: int, sock: socket.socket):
+        self.id = str(uuid.uuid4())
+        self.host = host
+        self.port = port
+        self.socket = sock
+        self.socket_lock = threading.Lock()
+        self.buffer_lock = threading.Lock()
+        self.closed = False
+        self.created_at = time.time()
+        self.last_activity = self.created_at
+        self.read_buffer = []
+        self.reader_thread = None
+
+
+TELNET_SESSIONS: dict[str, TelnetSession] = {}
+TELNET_SESSIONS_LOCK = threading.Lock()
 
 class DeviceConfig(BaseModel):
     device_type: str = 'cisco_ios'
@@ -15,8 +50,172 @@ class DeviceConfig(BaseModel):
     command: str | None = None
     commands: list[str] | None = None
 
+
 class PingRequest(BaseModel):
     host: str
+
+
+class TelnetConnectRequest(BaseModel):
+    host: str
+    port: int = 23
+
+
+class TelnetInputRequest(BaseModel):
+    session_id: str
+    data: str
+
+
+class TelnetSessionRequest(BaseModel):
+    session_id: str
+
+
+def _cleanup_stale_sessions():
+    cutoff = time.time() - 3600
+    stale_ids = []
+
+    with TELNET_SESSIONS_LOCK:
+        for session_id, session in TELNET_SESSIONS.items():
+            if session.closed or session.last_activity < cutoff:
+                stale_ids.append(session_id)
+
+    for session_id in stale_ids:
+        _close_telnet_session(session_id)
+
+
+def _get_telnet_session(session_id: str) -> TelnetSession:
+    with TELNET_SESSIONS_LOCK:
+        session = TELNET_SESSIONS.get(session_id)
+
+    if not session or session.closed:
+        raise HTTPException(status_code=404, detail="Telnet session not found")
+
+    return session
+
+
+def _parse_telnet_bytes(chunk: bytes) -> tuple[bytes, bytes]:
+    cleaned = bytearray()
+    responses = bytearray()
+    index = 0
+
+    while index < len(chunk):
+        current = chunk[index]
+
+        if current != TELNET_IAC:
+            cleaned.append(current)
+            index += 1
+            continue
+
+        if index + 1 >= len(chunk):
+            break
+
+        command = chunk[index + 1]
+
+        if command == TELNET_IAC:
+            cleaned.append(TELNET_IAC)
+            index += 2
+            continue
+
+        if command in (TELNET_WILL, TELNET_WONT, TELNET_DO, TELNET_DONT):
+            if index + 2 >= len(chunk):
+                break
+
+            option = chunk[index + 2]
+            if command == TELNET_WILL:
+                if option in (TELNET_OPT_BINARY, TELNET_OPT_ECHO, TELNET_OPT_SGA):
+                    responses.extend(bytes([TELNET_IAC, TELNET_DO, option]))
+                else:
+                    responses.extend(bytes([TELNET_IAC, TELNET_DONT, option]))
+            elif command == TELNET_DO:
+                if option in (TELNET_OPT_BINARY, TELNET_OPT_SGA):
+                    responses.extend(bytes([TELNET_IAC, TELNET_WILL, option]))
+                else:
+                    responses.extend(bytes([TELNET_IAC, TELNET_WONT, option]))
+            elif command == TELNET_WONT:
+                responses.extend(bytes([TELNET_IAC, TELNET_DONT, option]))
+            else:
+                responses.extend(bytes([TELNET_IAC, TELNET_WONT, option]))
+
+            index += 3
+            continue
+
+        if command == TELNET_SB:
+            end_index = chunk.find(bytes([TELNET_IAC, TELNET_SE]), index + 2)
+            if end_index == -1:
+                break
+            index = end_index + 2
+            continue
+
+        index += 2
+
+    return bytes(cleaned), bytes(responses)
+
+
+def _append_output(session: TelnetSession, text: str):
+    if not text:
+        return
+
+    with session.buffer_lock:
+        session.read_buffer.append(text)
+
+
+def _drain_output(session: TelnetSession) -> str:
+    with session.buffer_lock:
+        if not session.read_buffer:
+            return ""
+
+        data = "".join(session.read_buffer)
+        session.read_buffer.clear()
+        return data
+
+
+def _telnet_reader_loop(session: TelnetSession):
+    while not session.closed:
+        try:
+            chunk = session.socket.recv(4096)
+        except socket.timeout:
+            continue
+        except OSError:
+            session.closed = True
+            break
+
+        if not chunk:
+            session.closed = True
+            break
+
+        payload, responses = _parse_telnet_bytes(chunk)
+
+        if responses:
+            try:
+                with session.socket_lock:
+                    session.socket.sendall(responses)
+            except OSError:
+                session.closed = True
+                break
+
+        if payload:
+            cleaned = payload.decode('utf-8', errors='ignore').replace('\r\0', '')
+            _append_output(session, cleaned)
+
+        session.last_activity = time.time()
+
+
+def _close_telnet_session(session_id: str):
+    with TELNET_SESSIONS_LOCK:
+        session = TELNET_SESSIONS.pop(session_id, None)
+
+    if not session:
+        return
+
+    with session.socket_lock:
+        session.closed = True
+        try:
+            session.socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            session.socket.close()
+        except OSError:
+            pass
 
 @app.get("/")
 def read_root():
@@ -28,6 +227,71 @@ def ping_device(req: PingRequest):
     if delay is None:
         return {"host": req.host, "online": False, "delay": None}
     return {"host": req.host, "online": True, "delay": delay}
+
+
+@app.post("/telnet/connect")
+def telnet_connect(req: TelnetConnectRequest):
+    _cleanup_stale_sessions()
+
+    try:
+        sock = socket.create_connection((req.host, req.port), timeout=5)
+        sock.settimeout(0.5)
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to connect to telnet endpoint: {exc}")
+
+    session = TelnetSession(req.host, req.port, sock)
+    session.reader_thread = threading.Thread(target=_telnet_reader_loop, args=(session,), daemon=True)
+    session.reader_thread.start()
+
+    with TELNET_SESSIONS_LOCK:
+        TELNET_SESSIONS[session.id] = session
+
+    time.sleep(0.3)
+    initial_output = _drain_output(session)
+
+    return {
+        "session_id": session.id,
+        "host": session.host,
+        "port": session.port,
+        "output": initial_output,
+    }
+
+
+@app.post("/telnet/write")
+def telnet_write(req: TelnetInputRequest):
+    session = _get_telnet_session(req.session_id)
+
+    try:
+        with session.socket_lock:
+            session.socket.sendall(req.data.encode("utf-8", errors="ignore"))
+            session.last_activity = time.time()
+    except OSError as exc:
+        session.closed = True
+        raise HTTPException(status_code=502, detail=f"Failed to write to telnet session: {exc}")
+
+    time.sleep(0.1)
+    return {
+        "session_id": session.id,
+        "output": _drain_output(session),
+        "closed": session.closed,
+    }
+
+
+@app.post("/telnet/read")
+def telnet_read(req: TelnetSessionRequest):
+    session = _get_telnet_session(req.session_id)
+
+    return {
+        "session_id": session.id,
+        "output": _drain_output(session),
+        "closed": session.closed,
+    }
+
+
+@app.post("/telnet/close")
+def telnet_close(req: TelnetSessionRequest):
+    _close_telnet_session(req.session_id)
+    return {"closed": True}
 
 @app.post("/run-command")
 def run_cli_command(req: DeviceConfig):

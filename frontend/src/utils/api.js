@@ -2,7 +2,10 @@ import axios from 'axios';
 import router from '../router';
 
 const api = axios.create({
-  baseURL: 'http://localhost:8000/api', // Laravel backend API is on 8000, middleware is on 8001
+  // Relative URL — works on any host/IP/domain without rebuilding.
+  // Vite dev server proxies /api → localhost:8000 (see vite.config.js).
+  // nginx proxies /api → backend container in Docker and on EC2.
+  baseURL: '/api',
   timeout: 10000,
   headers: {
     'Accept': 'application/json',

@@ -1,0 +1,26 @@
+# docker-compose.prod.yml  — override for EC2 / production
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# What this changes from the base file:
+#   - nginx listens on port 80 (standard HTTP on EC2)
+#   - MySQL data is kept in a named volume (same as dev)
+#   - APP_DEBUG=false, APP_ENV=production for Laravel
+
+services:
+
+  db:
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_secret}
+      MYSQL_DATABASE: ${DB_DATABASE:-itsm}
+      MYSQL_USER: ${DB_USERNAME:-itsm}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-itsm_secret}
+
+  backend:
+    environment:
+      - MIDDLEWARE_URL=http://middleware:8001
+      - APP_ENV=production
+      - APP_DEBUG=false
+
+  nginx:
+    ports:
+      - "80:8080"    # EC2 exposes port 80 publicly; nginx still binds 8080 internally
