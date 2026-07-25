@@ -18,7 +18,7 @@ export default defineConfig({
     },
   },
   server: {
-    host: true,
+    host: 'localhost',
     // Proxy API calls to the Laravel dev server during local development
     proxy: {
       '/api': {
