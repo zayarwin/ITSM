@@ -12,7 +12,9 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        //
+        // Telnet keystrokes (e.g. Enter is "\r\n") must reach validation untouched —
+        // the default trimming would reduce whitespace-only keystrokes to "" and then null.
+        $middleware->trimStrings(except: ['data']);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

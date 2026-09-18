@@ -1,7 +1,4 @@
 <script setup>
-import { FitAddon } from '@xterm/addon-fit'
-import { Terminal } from '@xterm/xterm'
-import '@xterm/xterm/css/xterm.css'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '../utils/api.js'
@@ -13,13 +10,12 @@ const devicesLoading = ref(true)
 const deviceSearch = ref('')
 const tabs = ref([])
 const activeTabId = ref(null)
-const terminalMountRefs = ref({})
+const hiddenInputRef = ref(null)
 
 const tabPollers = new Map()
-const terminalInstances = new Map()
-const fitAddons = new Map()
-const terminalDisposables = new Map()
 const sendTimers = new Map()
+const outputContainerRefs = new Map()
+const outputContainerCallbacks = new Map()
 
 const filteredDevices = computed(() => {
   const keyword = deviceSearch.value.trim().toLowerCase()
@@ -40,13 +36,48 @@ const filteredDevices = computed(() => {
 
 const activeTab = computed(() => tabs.value.find(tab => tab.id === activeTabId.value) || null)
 
+const scrollToBottom = (tabId) => {
+  const el = outputContainerRefs.get(tabId)
+  if (el) {
+    el.scrollTop = el.scrollHeight
+  }
+}
+
 const writeLine = (tabId, line = '') => {
-  const terminal = terminalInstances.get(tabId)
-  if (!terminal) {
+  const tab = findTab(tabId)
+  if (!tab) {
     return
   }
 
-  terminal.writeln(line)
+  tab.output += line + '\n'
+  nextTick(() => scrollToBottom(tabId))
+}
+
+// Router-sent bytes include real terminal control characters (the router echoes back
+// Backspace/DEL as you type, "--More--" paging uses bare \r to overwrite a line, etc).
+// A plain string append can't represent "erase the previous character" or "return to
+// column 0" — so those control bytes have to be interpreted here rather than just appended.
+const appendTerminalText = (tab, text) => {
+  const normalized = text.replace(/\r\n/g, '\n')
+
+  for (const ch of normalized) {
+    if (ch === '\x08' || ch === '\x7f') {
+      const lastChar = tab.output[tab.output.length - 1]
+      if (lastChar && lastChar !== '\n') {
+        tab.output = tab.output.slice(0, -1)
+      }
+      continue
+    }
+
+    if (ch === '\r') {
+      // Bare CR (no following \n): move to column 0, i.e. erase back to the last newline.
+      const lastNewline = tab.output.lastIndexOf('\n')
+      tab.output = lastNewline === -1 ? '' : tab.output.slice(0, lastNewline + 1)
+      continue
+    }
+
+    tab.output += ch
+  }
 }
 
 const writeOutput = (tabId, text = '') => {
@@ -54,26 +85,34 @@ const writeOutput = (tabId, text = '') => {
     return
   }
 
-  const terminal = terminalInstances.get(tabId)
-  if (!terminal) {
+  const tab = findTab(tabId)
+  if (!tab) {
     return
   }
 
-  terminal.write(text.replace(/\r?\n/g, '\r\n'))
+  appendTerminalText(tab, text)
+  nextTick(() => scrollToBottom(tabId))
 }
 
-const fitTerminal = (tabId) => {
-  const fitAddon = fitAddons.get(tabId)
-  if (fitAddon) {
-    fitAddon.fit()
-  }
+const focusInput = () => {
+  hiddenInputRef.value?.focus()
 }
 
-const focusTerminal = (tabId) => {
-  const terminal = terminalInstances.get(tabId)
-  if (terminal) {
-    terminal.focus()
+// Memoized per tab so the scroll-container ref binding stays a stable function identity
+// across re-renders instead of a fresh inline closure every time.
+const setOutputRef = (tabId) => {
+  if (!outputContainerCallbacks.has(tabId)) {
+    outputContainerCallbacks.set(tabId, (el) => {
+      if (el) {
+        outputContainerRefs.set(tabId, el)
+        return
+      }
+
+      outputContainerRefs.delete(tabId)
+    })
   }
+
+  return outputContainerCallbacks.get(tabId)
 }
 
 const createTab = (device) => ({
@@ -85,6 +124,7 @@ const createTab = (device) => ({
   isConnected: false,
   isWriting: false,
   pendingInput: '',
+  output: '',
 })
 
 const findTab = (tabId) => tabs.value.find(tab => tab.id === tabId)
@@ -167,88 +207,61 @@ const queueTerminalInput = (tabId, data) => {
   }, 35))
 }
 
-const ensureTerminal = async (tabId) => {
-  const tab = findTab(tabId)
-  const mountElement = terminalMountRefs.value[tabId]
+// Regular character input (handles composition/IME correctly via the native input event).
+const handleInput = (event) => {
+  const data = event.target.value
+  event.target.value = ''
 
-  if (!tab || !mountElement || terminalInstances.has(tabId)) {
+  if (data && activeTabId.value) {
+    queueTerminalInput(activeTabId.value, data)
+  }
+}
+
+// Control keys that don't fire a useful "input" event.
+const handleKeydown = (event) => {
+  if (!activeTabId.value) {
     return
   }
 
-  await nextTick()
+  const keyMap = {
+    Enter: '\r',
+    // Cisco IOS's line editor reliably recognizes BS (\x08); DEL (\x7f) is inconsistent
+    // across IOS versions and can show up as a literal "^H" instead of erasing.
+    Backspace: '\x08',
+    Tab: '\t',
+    ArrowUp: '\x1b[A',
+    ArrowDown: '\x1b[B',
+    ArrowRight: '\x1b[C',
+    ArrowLeft: '\x1b[D',
+    Escape: '\x1b',
+  }
 
-  const terminal = new Terminal({
-    convertEol: true,
-    cursorBlink: true,
-    fontFamily: 'Consolas, "Courier New", monospace',
-    fontSize: 14,
-    scrollback: 5000,
-    theme: {
-      background: '#020617',
-      foreground: '#b6f0d0',
-      cursor: '#67e8f9',
-      black: '#020617',
-      green: '#86efac',
-      brightGreen: '#bbf7d0',
-      yellow: '#fde68a',
-      brightYellow: '#fef08a',
-      red: '#fca5a5',
-      brightRed: '#fecaca',
-      blue: '#93c5fd',
-      brightBlue: '#bfdbfe',
-    },
-  })
+  if (event.ctrlKey && event.key.length === 1) {
+    const code = event.key.toUpperCase().charCodeAt(0) - 64
+    if (code >= 0 && code <= 31) {
+      event.preventDefault()
+      queueTerminalInput(activeTabId.value, String.fromCharCode(code))
+      return
+    }
+  }
 
-  const fitAddon = new FitAddon()
-  terminal.loadAddon(fitAddon)
-  terminal.open(mountElement)
+  if (keyMap[event.key]) {
+    event.preventDefault()
+    queueTerminalInput(activeTabId.value, keyMap[event.key])
+  }
+}
 
-  terminalInstances.set(tabId, terminal)
-  fitAddons.set(tabId, fitAddon)
-  terminalDisposables.set(tabId, terminal.onData(data => queueTerminalInput(tabId, data)))
+const initTabOutput = (tabId) => {
+  const tab = findTab(tabId)
+  if (!tab) {
+    return
+  }
 
-  fitTerminal(tabId)
   writeLine(tabId, 'ITSM Web CLI Workspace')
   writeLine(tabId, `Device selected: ${tab.device.hostname} (${tab.device.ip_address})`)
   writeLine(tabId, 'Click Connect Telnet to open the router session.')
   writeLine(tabId, 'After that, use this terminal exactly like Putty. The router controls login prompts and password masking.')
   writeLine(tabId, '')
-
-  if (activeTabId.value === tabId) {
-    focusTerminal(tabId)
-  }
-}
-
-const disposeTerminal = (tabId) => {
-  const timer = sendTimers.get(tabId)
-  if (timer) {
-    clearTimeout(timer)
-    sendTimers.delete(tabId)
-  }
-
-  const disposable = terminalDisposables.get(tabId)
-  if (disposable) {
-    disposable.dispose()
-    terminalDisposables.delete(tabId)
-  }
-
-  const terminal = terminalInstances.get(tabId)
-  if (terminal) {
-    terminal.dispose()
-    terminalInstances.delete(tabId)
-  }
-
-  fitAddons.delete(tabId)
-}
-
-const setTerminalRef = (tabId) => (el) => {
-  if (el) {
-    terminalMountRefs.value[tabId] = el
-    ensureTerminal(tabId)
-    return
-  }
-
-  delete terminalMountRefs.value[tabId]
 }
 
 const fetchDevices = async () => {
@@ -271,8 +284,8 @@ const openDeviceTab = (device) => {
   if (existingTab) {
     activeTabId.value = existingTab.id
     nextTick(() => {
-      fitTerminal(existingTab.id)
-      focusTerminal(existingTab.id)
+      scrollToBottom(existingTab.id)
+      focusInput()
     })
     return
   }
@@ -280,11 +293,11 @@ const openDeviceTab = (device) => {
   const tab = createTab(device)
   tabs.value.push(tab)
   activeTabId.value = tab.id
+  initTabOutput(tab.id)
 
   nextTick(() => {
-    ensureTerminal(tab.id)
-    fitTerminal(tab.id)
-    focusTerminal(tab.id)
+    scrollToBottom(tab.id)
+    focusInput()
   })
 }
 
@@ -333,7 +346,8 @@ const closeTab = (tabId) => {
   }
 
   disconnectTab(tabs.value[index], false)
-  disposeTerminal(tabId)
+  outputContainerRefs.delete(tabId)
+  outputContainerCallbacks.delete(tabId)
   tabs.value.splice(index, 1)
 
   if (activeTabId.value === tabId) {
@@ -399,7 +413,7 @@ const connectTab = async (tab) => {
     }
 
     startPolling(tab)
-    focusTerminal(tab.id)
+    focusInput()
   } catch (error) {
     writeLine(tab.id, '[ERROR] Failed to open telnet session.')
     if (error.response?.data?.message) {
@@ -424,14 +438,6 @@ const ensureRouteDeviceTab = () => {
   }
 }
 
-const fitActiveTerminal = () => {
-  if (!activeTabId.value) {
-    return
-  }
-
-  fitTerminal(activeTabId.value)
-}
-
 watch(() => route.query.deviceId, () => {
   ensureRouteDeviceTab()
 })
@@ -442,21 +448,17 @@ watch(activeTabId, async (tabId) => {
   }
 
   await nextTick()
-  ensureTerminal(tabId)
-  fitTerminal(tabId)
-  focusTerminal(tabId)
+  scrollToBottom(tabId)
+  focusInput()
 })
 
 onMounted(() => {
   fetchDevices()
-  window.addEventListener('resize', fitActiveTerminal)
 })
 
 onUnmounted(() => {
-  window.removeEventListener('resize', fitActiveTerminal)
   tabs.value.forEach(tab => {
     disconnectTab(tab, false)
-    disposeTerminal(tab.id)
   })
 })
 </script>
@@ -568,14 +570,27 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <div class="flex-1 overflow-hidden bg-slate-950 p-4">
+          <div class="relative flex-1 overflow-hidden bg-slate-950 p-4">
             <div
               v-for="tab in tabs"
               :key="`terminal-${tab.id}`"
               v-show="activeTabId === tab.id"
-              :ref="setTerminalRef(tab.id)"
-              class="h-full w-full overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 p-2"
-            ></div>
+              :ref="setOutputRef(tab.id)"
+              class="h-full w-full cursor-text overflow-auto whitespace-pre-wrap break-words rounded-2xl border border-slate-800 bg-slate-950 p-3 font-mono text-sm leading-relaxed text-emerald-200"
+              @click="focusInput"
+            >{{ tab.output }}<span v-if="tab.isConnected && activeTabId === tab.id" class="inline-block h-4 w-2 animate-pulse bg-cyan-300 align-text-bottom"></span></div>
+
+            <textarea
+              ref="hiddenInputRef"
+              class="absolute h-px w-px opacity-0"
+              style="left: -9999px;"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              @keydown="handleKeydown"
+              @input="handleInput"
+            ></textarea>
           </div>
         </div>
 

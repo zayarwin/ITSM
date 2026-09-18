@@ -5,6 +5,10 @@ use Illuminate\Support\Facades\Route;
 
 Route::post('/login', [\App\Http\Controllers\AuthController::class, 'login']);
 
+// Server-to-server callback from the Python middleware's syslog listener.
+// Authenticated with a shared secret (checked in the controller), not Sanctum.
+Route::post('/internal/syslog-event', [\App\Http\Controllers\IncidentController::class, 'ingestSyslogEvent']);
+
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [\App\Http\Controllers\AuthController::class, 'logout']);
     Route::get('/user', function (Request $request) {
@@ -28,4 +32,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/change-requests', [\App\Http\Controllers\ChangeRequestController::class, 'store']);
     Route::put('/change-requests/{id}/status', [\App\Http\Controllers\ChangeRequestController::class, 'updateStatus']);
     Route::get('/change-requests/{id}/attachment', [\App\Http\Controllers\ChangeRequestController::class, 'downloadAttachment']);
+
+    // AI-investigated incidents (OSPF/BGP state changes detected via syslog)
+    Route::get('/incidents', [\App\Http\Controllers\IncidentController::class, 'index']);
+    Route::get('/incidents/{id}', [\App\Http\Controllers\IncidentController::class, 'show']);
 });

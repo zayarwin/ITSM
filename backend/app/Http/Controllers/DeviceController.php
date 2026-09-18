@@ -152,7 +152,9 @@ class DeviceController extends Controller
 
         $validated = $request->validate([
             'session_id' => 'required|string',
-            'data' => 'required|string',
+            // Not "required": keystrokes like Enter are pure whitespace ("\r\n"),
+            // and Laravel's "required" rule trims the value and rejects whitespace-only strings.
+            'data' => 'present|string',
         ]);
 
         try {

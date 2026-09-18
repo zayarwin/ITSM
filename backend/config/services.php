@@ -35,4 +35,13 @@ return [
         ],
     ],
 
+    'anthropic' => [
+        'api_key' => env('ANTHROPIC_API_KEY'),
+        'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-4-5'),
+    ],
+
+    'middleware' => [
+        'internal_secret' => env('MIDDLEWARE_INTERNAL_SECRET'),
+    ],
+
 ];
