@@ -14,7 +14,8 @@ const searchColumns = [
   { value: 'ip_address', label: 'IP Address' },
   { value: 'model', label: 'Model' },
   { value: 'os_version', label: 'OS Version' },
-  { value: 'location', label: 'Location' }
+  { value: 'location', label: 'Location' },
+  { value: 'eol_date', label: 'EOL' }
 ]
 
 const filteredDevices = computed(() => {
@@ -27,6 +28,26 @@ const filteredDevices = computed(() => {
     return keywords.some(keyword => fieldValue.includes(keyword))
   })
 })
+
+const EOL_WARNING_DAYS = 90
+
+const eolInfo = (device) => {
+  if (!device.eol_date) {
+    return { label: 'Not set', daysLeft: null, badgeClass: 'bg-slate-100 text-slate-500' }
+  }
+
+  const msPerDay = 1000 * 60 * 60 * 24
+  const daysLeft = Math.ceil((new Date(device.eol_date) - new Date()) / msPerDay)
+  const label = new Date(device.eol_date).toLocaleDateString()
+
+  if (daysLeft < 0) {
+    return { label, daysLeft, badgeClass: 'bg-red-100 text-red-700' }
+  }
+  if (daysLeft <= EOL_WARNING_DAYS) {
+    return { label, daysLeft, badgeClass: 'bg-amber-100 text-amber-800' }
+  }
+  return { label, daysLeft, badgeClass: 'bg-emerald-100 text-emerald-700' }
+}
 
 const form = ref({
   id: null,
@@ -41,25 +62,54 @@ const form = ref({
   device_type: 'cisco_ios'
 })
 
+const pingDevice = async (device) => {
+  try {
+    const pingResponse = await api.get(`/devices/${device.id}/ping`)
+    device.status = pingResponse.data.status
+  } catch (err) {
+    device.status = 'error'
+  }
+}
+
+// Full load: fetches the list, then pings every device via ONE batched backend call
+// (/devices/ping-all) instead of N separate browser requests. Pinging N devices as N
+// individual requests hits the browser's per-origin connection limit (~6 in Chrome) and
+// queues up, which can delay an unrelated request (like an Add/Edit/Delete save) behind the
+// ping burst for several seconds — the batch endpoint fans the pings out server-side instead,
+// where there's no such limit, so the browser only ever makes one request either way.
 const fetchDevices = async () => {
   loading.value = true
   try {
     const response = await api.get('/devices')
     devices.value = response.data.map(d => ({ ...d, status: 'checking' }))
-    
-    // Concurrently ping all devices
-    devices.value.forEach(async (device) => {
-      try {
-        const pingResponse = await api.get(`/devices/${device.id}/ping`)
-        device.status = pingResponse.data.status
-      } catch (err) {
-        device.status = 'error'
-      }
+
+    const statusResponse = await api.get('/devices/ping-all')
+    devices.value.forEach(device => {
+      device.status = statusResponse.data[device.id] || 'error'
     })
   } catch (error) {
     console.error('Failed to load devices:', error)
   } finally {
     loading.value = false
+  }
+}
+
+// Lighter refresh for after a save/delete: reloads the list but keeps each existing
+// device's already-known status instead of re-pinging everything, and only pings devices
+// that are genuinely new (weren't in the list before this refresh).
+const refreshDeviceList = async () => {
+  try {
+    const knownStatuses = new Map(devices.value.map(d => [d.id, d.status]))
+    const response = await api.get('/devices')
+
+    devices.value = response.data.map(d => ({
+      ...d,
+      status: knownStatuses.get(d.id) ?? 'checking',
+    }))
+
+    devices.value.filter(d => !knownStatuses.has(d.id)).forEach(pingDevice)
+  } catch (error) {
+    console.error('Failed to refresh devices:', error)
   }
 }
 
@@ -83,7 +133,7 @@ const saveDevice = async () => {
       await api.post('/devices', form.value)
     }
     showModal.value = false
-    await fetchDevices()
+    await refreshDeviceList()
   } catch (error) {
     console.error('Failed to save device:', error)
     alert(error.response?.data?.message || 'Error saving device configuration.')
@@ -94,7 +144,7 @@ const deleteDevice = async (id) => {
   if (confirm('Are you sure you want to permanently delete this device? This action cannot be undone.')) {
     try {
       await api.delete(`/devices/${id}`)
-      await fetchDevices()
+      await refreshDeviceList()
     } catch (error) {
       console.error('Failed to delete device:', error)
     }
@@ -144,19 +194,20 @@ onMounted(() => {
               <th class="p-4 font-semibold">Model</th>
               <th class="p-4 font-semibold">OS Version</th>
               <th class="p-4 font-semibold">Location</th>
+              <th class="p-4 font-semibold">EOL</th>
               <th class="p-4 font-semibold">Status</th>
               <th class="p-4 font-semibold text-right">Actions</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-100 text-slate-700">
             <tr v-if="loading">
-              <td colspan="7" class="p-8 text-center text-slate-400">Loading devices...</td>
+              <td colspan="8" class="p-8 text-center text-slate-400">Loading devices...</td>
             </tr>
             <tr v-else-if="devices.length === 0">
-              <td colspan="7" class="p-8 text-center text-slate-400">No devices found. Add one to get started.</td>
+              <td colspan="8" class="p-8 text-center text-slate-400">No devices found. Add one to get started.</td>
             </tr>
             <tr v-else-if="filteredDevices.length === 0">
-              <td colspan="7" class="p-8 text-center text-slate-400">No devices match your search criteria.</td>
+              <td colspan="8" class="p-8 text-center text-slate-400">No devices match your search criteria.</td>
             </tr>
             <tr v-else v-for="device in filteredDevices" :key="device.id" class="hover:bg-slate-50 transition">
               <td class="p-4 font-medium text-slate-900">{{ device.hostname }}</td>
@@ -174,6 +225,14 @@ onMounted(() => {
                 </span>
               </td>
               <td class="p-4">
+                <span :class="['inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium', eolInfo(device).badgeClass]">
+                  <svg v-if="eolInfo(device).daysLeft !== null && eolInfo(device).daysLeft <= EOL_WARNING_DAYS" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                  {{ eolInfo(device).label }}
+                  <span v-if="eolInfo(device).daysLeft !== null && eolInfo(device).daysLeft >= 0 && eolInfo(device).daysLeft <= EOL_WARNING_DAYS">({{ eolInfo(device).daysLeft }}d left)</span>
+                  <span v-else-if="eolInfo(device).daysLeft !== null && eolInfo(device).daysLeft < 0">(expired)</span>
+                </span>
+              </td>
+              <td class="p-4">
                 <div class="flex items-center gap-2">
                   <svg v-if="device.status === 'checking'" class="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
                   <div v-else-if="device.status === 'online'" class="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.6)]"></div>
@@ -182,9 +241,6 @@ onMounted(() => {
                 </div>
               </td>
               <td class="p-4 text-right flex justify-end gap-2 text-sm">
-                <router-link :to="`/cli?deviceId=${device.id}`" class="text-emerald-600 hover:text-emerald-800 p-2 hover:bg-emerald-50 rounded transition flex items-center font-medium">
-                  Connect CLI
-                </router-link>
                 <button @click="openEditModal(device)" class="text-blue-600 hover:text-blue-800 p-2 hover:bg-blue-50 rounded transition">Edit</button>
                 <button @click="deleteDevice(device.id)" class="text-red-500 hover:text-red-700 p-2 hover:bg-red-50 rounded transition">Delete</button>
               </td>

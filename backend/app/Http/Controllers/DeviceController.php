@@ -6,6 +6,19 @@ use Illuminate\Http\Request;
 
 class DeviceController extends Controller
 {
+    // Explicit, so it's visible in one place rather than implied by "no check exists":
+    // admin, engineer, and manager all have identical full access to device inventory.
+    private const ROLES_ALLOWED_TO_MANAGE_DEVICES = ['admin', 'engineer', 'manager'];
+
+    private function denyIfRoleNotAllowed(Request $request): ?\Illuminate\Http\JsonResponse
+    {
+        if (! in_array($request->user()->role, self::ROLES_ALLOWED_TO_MANAGE_DEVICES, true)) {
+            return response()->json(['message' => 'Unauthorized.'], 403);
+        }
+
+        return null;
+    }
+
     /**
      * Display a listing of the resource.
      */
@@ -19,6 +32,10 @@ class DeviceController extends Controller
      */
     public function store(Request $request)
     {
+        if ($response = $this->denyIfRoleNotAllowed($request)) {
+            return $response;
+        }
+
         $validated = $request->validate([
             'hostname' => 'required|string|max:255|unique:devices',
             'ip_address' => 'required|ip',
@@ -49,8 +66,12 @@ class DeviceController extends Controller
      */
     public function update(Request $request, string $id)
     {
+        if ($response = $this->denyIfRoleNotAllowed($request)) {
+            return $response;
+        }
+
         $device = \App\Models\Device::findOrFail($id);
-        
+
         $validated = $request->validate([
             'hostname' => 'sometimes|required|string|max:255|unique:devices,hostname,'.$device->id,
             'ip_address' => 'sometimes|required|ip',
@@ -75,8 +96,12 @@ class DeviceController extends Controller
     /**
      * Remove the specified resource from storage.
      */
-    public function destroy(string $id)
+    public function destroy(Request $request, string $id)
     {
+        if ($response = $this->denyIfRoleNotAllowed($request)) {
+            return $response;
+        }
+
         $device = \App\Models\Device::findOrFail($id);
         $device->delete();
         return response()->json(null, 204);
@@ -246,5 +271,35 @@ class DeviceController extends Controller
         }
 
         return response()->json(['status' => 'offline']);
+    }
+
+    /**
+     * Ping every device in one call. The browser has a per-origin connection limit
+     * (~6 in Chrome); pinging N devices as N separate browser requests queues them up and
+     * can delay unrelated requests (like an Add/Edit/Delete save) behind the ping burst for
+     * several seconds. Fanning the pings out server-side with Http::pool() isn't subject to
+     * that limit, so the browser only ever makes one request regardless of device count.
+     */
+    public function pingAll()
+    {
+        $devices = \App\Models\Device::all(['id', 'ip_address']);
+        $middlewareUrl = rtrim(env('MIDDLEWARE_URL', 'http://127.0.0.1:8001'), '/');
+
+        $responses = \Illuminate\Support\Facades\Http::pool(fn ($pool) => $devices->map(
+            fn ($device) => $pool->as((string) $device->id)
+                ->timeout(5)
+                ->post("{$middlewareUrl}/ping", ['host' => $device->ip_address])
+        )->all());
+
+        $statuses = [];
+        foreach ($devices as $device) {
+            $response = $responses[(string) $device->id] ?? null;
+            $online = $response instanceof \Illuminate\Http\Client\Response
+                && $response->successful()
+                && $response->json('online', false);
+            $statuses[$device->id] = $online ? 'online' : 'offline';
+        }
+
+        return response()->json($statuses);
     }
 }

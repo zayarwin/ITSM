@@ -15,18 +15,42 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        User::create([
-            'name' => 'ITSM Admin',
-            'email' => 'admin@mfdb.com',
-            'password' => \Illuminate\Support\Facades\Hash::make('password'),
-            'role' => 'admin',
-        ]);
+        // firstOrCreate: safe to re-run against a database that already has these users
+        // (e.g. after a fresh clone) instead of failing on the unique email constraint.
+        User::firstOrCreate(
+            ['email' => 'admin@mfdb.com'],
+            [
+                'name' => 'ITSM Admin',
+                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'role' => 'admin',
+            ]
+        );
 
-        User::create([
-            'name' => 'ITSM Engineer',
-            'email' => 'eng@mfdb.com',
-            'password' => \Illuminate\Support\Facades\Hash::make('password'),
-            'role' => 'engineer',
-        ]);
+        User::firstOrCreate(
+            ['email' => 'eng@mfdb.com'],
+            [
+                'name' => 'ITSM Engineer',
+                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'role' => 'engineer',
+            ]
+        );
+
+        User::firstOrCreate(
+            ['email' => 'kyawkyaw@mfdb.com'],
+            [
+                'name' => 'Kyaw Kyaw',
+                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'role' => 'engineer',
+            ]
+        );
+
+        User::firstOrCreate(
+            ['email' => 'tuntun@mfdb.com'],
+            [
+                'name' => 'Tun Tun',
+                'password' => \Illuminate\Support\Facades\Hash::make('password'),
+                'role' => 'manager',
+            ]
+        );
     }
 }

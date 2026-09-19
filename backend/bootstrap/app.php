@@ -15,6 +15,10 @@ return Application::configure(basePath: dirname(__DIR__))
         // Telnet keystrokes (e.g. Enter is "\r\n") must reach validation untouched —
         // the default trimming would reduce whitespace-only keystrokes to "" and then null.
         $middleware->trimStrings(except: ['data']);
+
+        $middleware->alias([
+            'idle.timeout' => \App\Http\Middleware\ExpireIdleSanctumToken::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

@@ -16,6 +16,9 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Protect Device handling endpoints so you have to be logged in
+    // Registered before apiResource's GET /devices/{device} so "ping-all" isn't swallowed
+    // by the resource's {device} wildcard and treated as a device ID.
+    Route::get('/devices/ping-all', [\App\Http\Controllers\DeviceController::class, 'pingAll']);
     Route::apiResource('devices', \App\Http\Controllers\DeviceController::class);
     Route::post('/devices/{id}/run-command', [\App\Http\Controllers\DeviceController::class, 'runCommand']);
     Route::get('/devices/{id}/ping', [\App\Http\Controllers\DeviceController::class, 'ping']);
